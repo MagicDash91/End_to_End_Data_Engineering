@@ -1,0 +1,91 @@
+version: 2
+
+models:
+  - name: dim_customers
+    description: One row per customer (silver customers, cleaned).
+    columns:
+      - name: customer_id
+        data_tests: [unique, not_null]
+      - name: email
+        description: Null when the source email failed validation (see email_is_valid).
+
+  - name: dim_products
+    description: One row per product with its current price.
+    columns:
+      - name: product_id
+        data_tests: [unique, not_null]
+      - name: current_unit_price
+        data_tests: [not_null]
+
+  - name: dim_date
+    description: Calendar from the first order date to today.
+    columns:
+      - name: date_day
+        data_tests: [unique, not_null]
+
+  - name: fct_order_items
+    description: One row per valid order line, with order context.
+    columns:
+      - name: order_item_id
+        data_tests: [unique, not_null]
+      - name: order_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('fct_orders')
+                field: order_id
+      - name: product_id
+        data_tests:
+          - relationships:
+              arguments:
+                to: ref('dim_products')
+                field: product_id
+
+  - name: fct_orders
+    description: One row per order. Revenue = net_amount of paid/shipped/delivered orders (is_revenue).
+    columns:
+      - name: order_id
+        data_tests: [unique, not_null]
+      - name: customer_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('dim_customers')
+                field: customer_id
+      - name: order_status
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [pending, paid, shipped, delivered, cancelled, returned]
+      - name: payment_method
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [bank_transfer, credit_card, e_wallet, virtual_account, cod]
+
+  - name: mart_daily_revenue
+    description: Daily orders, revenue, AOV, cancellations and new customers (every calendar day).
+    columns:
+      - name: date_day
+        data_tests: [unique, not_null]
+
+  - name: mart_customer_ltv
+    description: Lifetime value and recency segment per customer.
+    columns:
+      - name: customer_id
+        data_tests: [unique, not_null]
+      - name: segment
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [prospect, champion, active, at_risk, churned]
+
+  - name: mart_product_performance
+    description: Units, revenue and return rate per product.
+    columns:
+      - name: product_id
+        data_tests: [unique, not_null]
+
+  - name: mart_data_quality
+    description: Rows rejected per silver rule in the latest run.

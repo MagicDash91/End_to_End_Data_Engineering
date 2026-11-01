@@ -1,0 +1,37 @@
+.env
+*.env.local
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.venv/
+
+# dbt
+dbt/target/
+dbt/logs/
+dbt/dbt_packages/
+dbt/.user.yml
+
+# airflow
+airflow/logs/
+
+# terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+terraform.tfvars
+crash.log
+
+# build output
+dist/
+
+# local secrets / backups
+.env.*
+!.env.example
+infra/**/backend.hcl
+
+# local artifacts
+*.stackdump
+.deepeval/
+dbt-docs/

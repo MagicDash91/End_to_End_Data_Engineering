@@ -1,0 +1,17 @@
+[project]
+name = "ecommerce-medallion"
+version = "1.0.0"
+description = "E-commerce medallion pipeline: Airbyte -> bronze, Spark -> silver, dbt -> gold, orchestrated by Airflow"
+requires-python = ">=3.11"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+extend-exclude = ["dbt", "infra"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".", "spark/jobs"]

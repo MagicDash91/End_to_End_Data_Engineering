@@ -1,0 +1,6 @@
+# Copy to backend.hcl and fill the bucket from `terraform output state_bucket` in infra/bootstrap.
+bucket       = "ecom-medallion-tfstate-123456789012"
+key          = "environments/dev/terraform.tfstate"
+region       = "ap-southeast-3"
+encrypt      = true
+use_lockfile = true

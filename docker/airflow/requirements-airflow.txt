@@ -1,0 +1,6 @@
+# Installed on top of apache/airflow (Airflow itself is pinned in the Dockerfile).
+apache-airflow-providers-apache-spark>=5.0,<6
+# Must match docker/spark/Dockerfile: the driver here and the executors there run the same Spark.
+pyspark==3.5.5
+psycopg2-binary>=2.9,<3
+requests>=2.31,<3

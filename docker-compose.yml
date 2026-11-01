@@ -1,0 +1,110 @@
+# Local stack (and the same stack on EC2, where PG_HOST points at RDS).
+# Airbyte is not in here: it runs in its own kind cluster via `abctl local install` (see README).
+name: ecommerce-medallion
+
+x-pg-env: &pg-env
+  PG_HOST: ${PG_HOST:-postgres}
+  PG_PORT: ${PG_PORT:-5432}
+  PG_USER: ${PG_USER:-de_admin}
+  PG_PASSWORD: ${PG_PASSWORD:?set PG_PASSWORD in .env}
+  PG_SSLMODE: ${PG_SSLMODE:-disable}
+  SHOP_DB: ${SHOP_DB:-shop}
+  WAREHOUSE_DB: ${WAREHOUSE_DB:-warehouse}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${PG_USER:-de_admin}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:?set PG_PASSWORD in .env}
+      POSTGRES_DB: postgres
+      AIRFLOW_DB_PASSWORD: ${AIRFLOW_DB_PASSWORD:?set AIRFLOW_DB_PASSWORD in .env}
+    ports:
+      # Airbyte (in kind) reaches it through this host port too, via host.docker.internal.
+      - "${PG_BIND:-127.0.0.1}:${PG_HOST_PORT:-5433}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./sql/postgres-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-de_admin} -d postgres"]
+      interval: 5s
+      retries: 20
+    restart: unless-stopped
+
+  db-init:
+    image: postgres:16-alpine
+    entrypoint: ["sh", "/sql/init.sh"]
+    environment: *pg-env
+    volumes:
+      - ./sql/init:/sql:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  spark-master:
+    build: ./docker/spark
+    image: ecommerce-medallion/spark:3.5.5
+    hostname: spark-master
+    command: ["/usr/local/lib/python3.12/site-packages/pyspark/bin/spark-class",
+              "org.apache.spark.deploy.master.Master", "--host", "spark-master", "--port", "7077",
+              "--webui-port", "8080"]
+    ports:
+      - "127.0.0.1:8081:8080"
+    restart: unless-stopped
+
+  spark-worker:
+    image: ecommerce-medallion/spark:3.5.5
+    hostname: spark-worker
+    command: ["/usr/local/lib/python3.12/site-packages/pyspark/bin/spark-class",
+              "org.apache.spark.deploy.worker.Worker", "spark://spark-master:7077",
+              "--cores", "${SPARK_WORKER_CORES:-2}", "--memory", "${SPARK_WORKER_MEMORY:-2g}",
+              "--webui-port", "8082"]
+    depends_on: [spark-master]
+    restart: unless-stopped
+
+  airflow:
+    build: ./docker/airflow
+    image: ecommerce-medallion/airflow:3.2.1
+    hostname: airflow
+    command: standalone
+    environment:
+      <<: *pg-env
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:${AIRFLOW_DB_PASSWORD}@postgres:5432/airflow
+      AIRFLOW__CORE__LOAD_EXAMPLES: "False"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "False"
+      # UI is only bound to 127.0.0.1 (on EC2: reached through an SSM port-forward), so no login.
+      AIRFLOW__CORE__SIMPLE_AUTH_MANAGER_ALL_ADMINS: "True"
+      AIRFLOW_CONN_SPARK_DEFAULT: '{"conn_type": "spark", "host": "spark://spark-master", "port": 7077}'
+      SPARK_DRIVER_HOST: airflow
+      PROJECT_DIR: /opt/project
+      PYTHONPATH: /opt/project
+      INGESTION_MODE: ${INGESTION_MODE:-python}
+      AIRBYTE_API_URL: ${AIRBYTE_API_URL:-http://host.docker.internal:8000/api/public/v1}
+      AIRBYTE_CLIENT_ID: ${AIRBYTE_CLIENT_ID:-}
+      AIRBYTE_CLIENT_SECRET: ${AIRBYTE_CLIENT_SECRET:-}
+      AIRBYTE_CONNECTION_NAME: ${AIRBYTE_CONNECTION_NAME:-shop-to-bronze}
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags:ro
+      - ./:/opt/project:ro
+      - airflow-logs:/opt/airflow/logs
+    ports:
+      - "127.0.0.1:8080:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      db-init:
+        condition: service_completed_successfully
+      spark-master:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/api/v2/monitor/health"]
+      interval: 15s
+      retries: 20
+      start_period: 60s
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+  airflow-logs:

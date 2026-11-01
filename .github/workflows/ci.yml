@@ -1,0 +1,121 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - run: pip install -r requirements-dev.txt
+      - run: ruff check .
+      - run: pytest -q
+
+  # The whole medallion flow on a throwaway Postgres: generator -> bronze (python loader) -> Spark -> dbt.
+  pipeline-e2e:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: de_admin
+          POSTGRES_PASSWORD: ci-password
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U de_admin" --health-interval 5s --health-timeout 5s --health-retries 20
+    env:
+      PG_HOST: localhost
+      PG_PORT: "5432"
+      PG_USER: de_admin
+      PG_PASSWORD: ci-password
+      PG_SSLMODE: disable
+      SHOP_DB: shop
+      WAREHOUSE_DB: warehouse
+      PG_JDBC_VERSION: 42.7.4
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - run: pip install -r requirements-dev.txt
+      - name: Create databases and schemas
+        run: sh sql/init/init.sh
+      - name: Seed source and ingest to bronze (two incremental batches)
+        run: |
+          python -m pipeline.generator seed --customers 200 --orders 1000
+          python -m pipeline.bronze_loader
+          python -m pipeline.generator simulate --orders 100
+          python -m pipeline.bronze_loader
+      - name: Bronze -> silver (Spark)
+        run: |
+          curl -fsSL -o postgresql.jar \
+            "https://repo1.maven.org/maven2/org/postgresql/postgresql/${PG_JDBC_VERSION}/postgresql-${PG_JDBC_VERSION}.jar"
+          spark-submit --master "local[2]" --jars postgresql.jar --py-files spark/jobs/transforms.py \
+            spark/jobs/bronze_to_silver.py
+      - name: Silver -> gold (dbt build)
+        run: |
+          dbt source freshness --project-dir dbt --profiles-dir dbt
+          dbt build --project-dir dbt --profiles-dir dbt
+
+  terraform:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.14.8"
+      - run: terraform fmt -check -recursive infra
+      - name: validate
+        run: |
+          for dir in infra/bootstrap infra/environments/dev; do
+            terraform -chdir="$dir" init -backend=false -input=false
+            terraform -chdir="$dir" validate
+          done
+
+  terraform-plan:
+    if: github.event_name == 'pull_request' && vars.AWS_ROLE_ARN != ''
+    needs: terraform
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    defaults:
+      run:
+        working-directory: infra/environments/dev
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.14.8"
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+      - run: >-
+          terraform init -input=false
+          -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+          -backend-config="key=environments/dev/terraform.tfstate"
+          -backend-config="region=${{ vars.AWS_REGION }}"
+          -backend-config="use_lockfile=true"
+      - run: terraform plan -input=false -no-color -var="region=${{ vars.AWS_REGION }}"

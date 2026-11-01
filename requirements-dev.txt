@@ -1,0 +1,8 @@
+# Local tests + CI. The containers install their own requirements (docker/*/).
+pyspark==3.5.5
+psycopg2-binary>=2.9,<3
+requests>=2.31,<3
+dbt-core==1.11.11
+dbt-postgres==1.10.0
+pytest>=8
+ruff>=0.6

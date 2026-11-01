@@ -1,0 +1,15 @@
+# Credentials come from the same env vars as the rest of the stack (see .env.example); nothing secret here.
+ecommerce_medallion:
+  target: "{{ env_var('DBT_TARGET', 'dev') }}"
+  outputs:
+    dev:
+      type: postgres
+      host: "{{ env_var('PG_HOST', 'localhost') }}"
+      port: "{{ env_var('PG_PORT', '5433') | int }}"
+      user: "{{ env_var('PG_USER', 'de_admin') }}"
+      # Empty default keeps `dbt parse` (and IDE extensions) working without .env; runs still need it set.
+      password: "{{ env_var('PG_PASSWORD', '') }}"
+      dbname: "{{ env_var('WAREHOUSE_DB', 'warehouse') }}"
+      schema: gold
+      sslmode: "{{ env_var('PG_SSLMODE', 'disable') }}"
+      threads: 4

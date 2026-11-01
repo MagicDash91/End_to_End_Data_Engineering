@@ -1,0 +1,45 @@
+#!/bin/bash
+# First boot of the pipeline host. Installs Docker + compose/buildx, writes the deploy helper and runs it.
+# Later deploys only call /usr/local/bin/de-deploy (from GitHub Actions via SSM).
+set -euxo pipefail
+
+cat > /etc/de-project.env <<'EOF'
+PROJECT_NAME=${project}
+AWS_REGION=${region}
+AWS_DEFAULT_REGION=${region}
+ARTIFACTS_BUCKET=${artifacts_bucket}
+DB_SECRET_ARN=${db_secret_arn}
+INGESTION_MODE=${ingestion_mode}
+EOF
+
+dnf install -y docker jq tar gzip
+systemctl enable --now docker
+usermod -aG docker ec2-user
+
+mkdir -p /usr/local/lib/docker/cli-plugins
+curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-compose \
+  https://github.com/docker/compose/releases/download/v2.29.7/docker-compose-linux-x86_64
+curl -fsSL -o /usr/local/lib/docker/cli-plugins/docker-buildx \
+  https://github.com/docker/buildx/releases/download/v0.19.3/buildx-v0.19.3.linux-amd64
+chmod +x /usr/local/lib/docker/cli-plugins/*
+
+cat > /usr/local/bin/de-deploy <<'EOF'
+#!/bin/bash
+# Pull releases/current.tar.gz, unpack it as a new release, point /opt/de-project/current at it, run setup.
+set -euo pipefail
+source /etc/de-project.env
+release="/opt/de-project/releases/$(date -u +%Y%m%dT%H%M%SZ)"
+mkdir -p "$release" /opt/de-project/shared
+aws s3 cp "s3://$ARTIFACTS_BUCKET/releases/current.tar.gz" - | tar -xz -C "$release"
+ln -sfn "$release" /opt/de-project/current
+bash /opt/de-project/current/deploy/ec2/setup.sh
+ls -1dt /opt/de-project/releases/* | tail -n +4 | xargs -r rm -rf
+EOF
+chmod +x /usr/local/bin/de-deploy
+
+# The first terraform apply runs before CI has uploaded a release; the deploy job runs de-deploy later.
+if aws s3 ls "s3://${artifacts_bucket}/releases/current.tar.gz" >/dev/null 2>&1; then
+  /usr/local/bin/de-deploy
+else
+  echo "no release uploaded yet; waiting for the deploy workflow"
+fi

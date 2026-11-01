@@ -1,0 +1,21 @@
+name: ecommerce_medallion
+version: "1.0.0"
+config-version: 2
+profile: ecommerce_medallion
+
+model-paths: ["models"]
+test-paths: ["tests"]
+macro-paths: ["macros"]
+clean-targets: ["target", "logs"]
+
+models:
+  ecommerce_medallion:
+    gold:
+      +schema: gold
+      +materialized: table
+      dimensions:
+        +tags: ["dimension"]
+      facts:
+        +tags: ["fact"]
+      marts:
+        +tags: ["mart"]
